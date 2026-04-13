@@ -11,23 +11,47 @@ Your goal is to:
 - Evaluate what your system gets right and wrong
 - Reflect on how this mirrors real world AI recommenders
 
-Replace this paragraph with your own summary of what your version does.
+This version loads a 10-song catalog from a CSV file, scores each song against a user's stated preferences (genre, mood, and energy level), and returns the top 5 recommendations ranked by score. Each result includes a plain-language explanation of why it was chosen. The system is fully explainable — there are no hidden layers, just arithmetic applied to song features.
 
 ---
 
 ## How The System Works
 
-Explain your design in plain language.
+Each `Song` is represented by: **genre, mood, energy, tempo_bpm, valence, danceability, acousticness**.
 
-Some prompts to answer:
+The `UserProfile` stores: **favorite_genre, favorite_mood, target_energy, likes_acoustic**.
 
-- What features does each `Song` use in your system
-  - For example: genre, mood, energy, tempo
-- What information does your `UserProfile` store
-- How does your `Recommender` compute a score for each song
-- How do you choose which songs to recommend
+### Algorithm Recipe
 
-You can include a simple diagram or bullet list if helpful.
+Every song in the catalog is scored against the user profile using these rules:
+
+| Rule | Points |
+|---|---|
+| Genre matches `favorite_genre` | +2.0 |
+| Mood matches `favorite_mood` | +1.0 |
+| Energy similarity: `1.0 - abs(song.energy - target_energy)` | 0.0 – 1.0 |
+| User likes acoustic AND song acousticness ≥ 0.7 | +0.5 |
+| User dislikes acoustic AND song acousticness ≥ 0.7 | −0.5 |
+
+After every song is scored, they are sorted from highest to lowest. The top `k` songs are returned as recommendations along with a plain-language explanation of why each one was chosen.
+
+**Data flow:**
+```
+Input (user_prefs dict)
+  → Loop: score every song in songs.csv using score_song()
+  → Sort all (song, score, explanation) tuples by score descending
+  → Output: top k recommendations printed to terminal
+```
+### Sample Output
+
+![Terminal output](output.png)
+
+
+### Potential Biases
+
+- **Genre dominates**: A genre match adds +2.0, so songs in the right genre will almost always outrank better energy/mood fits from other genres.
+- **Categorical matching only**: Genre and mood are exact string matches — "indie pop" and "pop" are treated as completely different even though they are similar.
+- **Energy is the only numeric feature used**: Valence, danceability, and tempo are loaded but not scored, so a danceable song a user would love could still rank low.
 
 ---
 
@@ -68,25 +92,28 @@ You can add more tests in `tests/test_recommender.py`.
 
 ## Experiments You Tried
 
-Use this section to document the experiments you ran. For example:
+**Experiment 1: Default pop/happy profile (energy 0.8)**
+Running the system with `genre: pop, mood: happy, energy: 0.8` gave Sunrise City as #1 with a score of 3.98 — all three criteria matched. Gym Hero came in at #2 (score 2.87) despite being "intense" mood, purely because of the genre match bonus. This confirmed that genre dominates the ranking.
 
-- What happened when you changed the weight on genre from 2.0 to 0.5
-- What happened when you added tempo or valence to the score
-- How did your system behave for different types of users
+**Experiment 2: Jazz profile (genre: jazz, mood: relaxed, energy: 0.4)**
+Coffee Shop Stories ranked #1 as expected. But slots #2–5 were filled by lofi and ambient songs that had no genre relationship — they just had similar energy levels. This revealed that with only one song per rare genre, the system fills the rest of the list with energy-close songs regardless of genre fit.
+
+**Experiment 3: What if genre weight dropped from 2.0 to 0.5?**
+Mentally tracing the math: Sunrise City would go from 3.98 to ~2.48. Rooftop Lights (indie pop, happy) would go from 1.96 to ~1.96 — unchanged. The gap narrows significantly, and mood + energy matches from other genres would start competing more. The top 5 would be more diverse but genre matches would feel less "intentional."
+
+**Experiment 4: Lofi/chill profile (genre: lofi, mood: chill, energy: 0.4)**
+Midnight Coding and Library Rain both scored above 3.0 and took the top two slots. The remaining three spots went to ambient and jazz songs (chill/relaxed mood, low energy). This was the profile that felt most "correct" — the recommendations actually matched the vibe.
 
 ---
 
 ## Limitations and Risks
 
-Summarize some limitations of your recommender.
-
-Examples:
-
-- It only works on a tiny catalog
-- It does not understand lyrics or language
-- It might over favor one genre or mood
-
-You will go deeper on this in your model card.
+- **Tiny catalog**: With only 10 songs, users preferring less-represented genres (jazz, ambient, synthwave) get at most 1–2 genre-matched results. The rest of their top 5 is filler.
+- **Genre dominates**: The +2.0 genre weight means a song with the right genre but the wrong mood and energy will usually outrank a better overall match in a different genre.
+- **Exact string matching**: "indie pop" and "pop" score zero overlap. A user who types "pop" will never see Rooftop Lights in their genre-matched results even though it fits the vibe.
+- **Most features go unused**: Valence, danceability, and tempo are loaded but never factored into scores. A user who wants something danceable has no way to express that preference.
+- **No learning or history**: The system treats every run as if the user has never listened to anything. It cannot avoid recommending the same songs repeatedly or adapt based on what the user skipped.
+- **Fixed weights for everyone**: Someone who cares deeply about mood but little about genre gets the exact same scoring formula as everyone else. There is no way to personalize the importance of each factor.
 
 ---
 
@@ -96,10 +123,9 @@ Read and complete `model_card.md`:
 
 [**Model Card**](model_card.md)
 
-Write 1 to 2 paragraphs here about what you learned:
+Building this system made it clear that a recommendation is just arithmetic with a friendly label on top. The model has no idea what music sounds like — it compares strings and subtracts decimals. But when it prints "Recommended because it matches your favorite genre and energy level is very close to your target," it genuinely feels like the system understood something. That gap between what is actually happening under the hood and what it feels like to the user is the most important thing this project taught me about AI systems.
 
-- about how recommenders turn data into predictions
-- about where bias or unfairness could show up in systems like this
+The bias piece was equally eye-opening. I did not set out to make genre dominate everything — I just chose +2.0 as a reasonable starting weight. But that single number quietly shapes every result the system produces. A user who loves jazz gets a worse experience than a user who loves pop, not because of any intentional decision, but because the catalog happened to have more pop songs and genre happened to get the highest weight. Real recommenders face the exact same problem at a scale of millions of users, which is why the weight choices baked into these systems are not just technical decisions — they are design decisions with real consequences for who gets served well and who does not.
 
 
 ---
