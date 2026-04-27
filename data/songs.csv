@@ -1,11 +1,21 @@
-id,title,artist,genre,mood,energy,tempo_bpm,valence,danceability,acousticness
-1,Sunrise City,Neon Echo,pop,happy,0.82,118,0.84,0.79,0.18
-2,Midnight Coding,LoRoom,lofi,chill,0.42,78,0.56,0.62,0.71
-3,Storm Runner,Voltline,rock,intense,0.91,152,0.48,0.66,0.10
-4,Library Rain,Paper Lanterns,lofi,chill,0.35,72,0.60,0.58,0.86
-5,Gym Hero,Max Pulse,pop,intense,0.93,132,0.77,0.88,0.05
-6,Spacewalk Thoughts,Orbit Bloom,ambient,chill,0.28,60,0.65,0.41,0.92
-7,Coffee Shop Stories,Slow Stereo,jazz,relaxed,0.37,90,0.71,0.54,0.89
-8,Night Drive Loop,Neon Echo,synthwave,moody,0.75,110,0.49,0.73,0.22
-9,Focus Flow,LoRoom,lofi,focused,0.40,80,0.59,0.60,0.78
-10,Rooftop Lights,Indigo Parade,indie pop,happy,0.76,124,0.81,0.82,0.35
+id,title,artist,genre,genre_group,mood,energy,valence,danceability,acousticness,tempo_norm,popularity,explicit
+1,Sunrise City,Neon Echo,pop,pop,happy,0.82,0.84,0.79,0.18,0.485,72,False
+2,Midnight Coding,LoRoom,lofi,ambient,focused,0.42,0.56,0.62,0.71,0.321,58,False
+3,Storm Runner,Voltline,rock,rock,energetic,0.91,0.48,0.66,0.10,0.625,65,False
+4,Library Rain,Paper Lanterns,lofi,ambient,chill,0.35,0.60,0.58,0.86,0.296,54,False
+5,Gym Hero,Max Pulse,pop,pop,happy,0.93,0.77,0.88,0.05,0.542,68,False
+6,Spacewalk Thoughts,Orbit Bloom,ambient,ambient,chill,0.28,0.65,0.41,0.92,0.247,45,False
+7,Coffee Shop Stories,Slow Stereo,jazz,jazz,chill,0.37,0.71,0.54,0.89,0.370,51,False
+8,Night Drive Loop,Neon Echo,synthwave,electronic,energetic,0.75,0.49,0.73,0.22,0.452,63,False
+9,Focus Flow,LoRoom,lofi,ambient,focused,0.40,0.59,0.60,0.78,0.329,55,False
+10,Rooftop Lights,Indigo Parade,indie-pop,pop,happy,0.76,0.81,0.82,0.35,0.510,70,False
+11,Golden Flow,Metro Wave,hip-hop,hip-hop,happy,0.85,0.72,0.90,0.08,0.390,74,False
+12,Sunday Drive,Cactus Road,country,country,chill,0.55,0.78,0.65,0.55,0.431,60,False
+13,Velvet Throne,R&B Soul,r-n-b,r&b,happy,0.65,0.67,0.77,0.28,0.362,66,False
+14,Thunderclap,Iron Fist,metal,metal,intense,0.97,0.31,0.55,0.04,0.740,59,False
+15,Moonrise Waltz,Clara Strings,classical,classical,chill,0.30,0.82,0.35,0.95,0.288,48,False
+16,Neon Jungle,Pixel Rush,electronic,electronic,energetic,0.78,0.58,0.85,0.12,0.526,67,False
+17,Soulfire,Ember Lane,r-n-b,r&b,happy,0.72,0.88,0.80,0.22,0.386,71,False
+18,Backyard Blues,Delta Road,blues,jazz,focused,0.48,0.55,0.50,0.75,0.349,44,False
+19,Coco Bay,Island Rhythm,reggae,reggae,chill,0.50,0.76,0.72,0.62,0.329,56,False
+20,Drift Away,Vapor Trail,electronic,electronic,happy,0.60,0.63,0.75,0.18,0.473,61,False

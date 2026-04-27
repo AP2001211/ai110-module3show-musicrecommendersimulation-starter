@@ -1,15 +1,17 @@
-# Byte compiled
+# Python
 __pycache__/
-*.py[cod]
+*.pyc
 *.pyo
 
-# Virtual environments
+# Virtual env
 .venv/
-env/
 venv/
 
-# OS files
+# Data files (optional - very important for large dataset)
+data/spotify-tracks-dataset.csv
+
+# Mac
 .DS_Store
 
-# Pytest cache
-.pytest_cache/
+# Streamlit cache
+.streamlit/

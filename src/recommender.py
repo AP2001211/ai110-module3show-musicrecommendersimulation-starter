@@ -1,147 +1,308 @@
-from typing import List, Dict, Tuple, Optional
-from dataclasses import dataclass
-import csv
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Dict, List, Tuple
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Data models
+# ---------------------------------------------------------------------------
 
 @dataclass
 class Song:
-    """
-    Represents a song and its attributes.
-    Required by tests/test_recommender.py
-    """
     id: int
     title: str
     artist: str
-    genre: str
-    mood: str
+    genre: str        # raw genre (e.g. "alt-rock")
+    genre_group: str  # mapped group (e.g. "rock")
+    mood: str         # derived from valence + energy
     energy: float
-    tempo_bpm: float
     valence: float
     danceability: float
     acousticness: float
+    tempo_norm: float  # tempo / 243, normalized 0–1
+    popularity: int    # 0–100
+    explicit: bool
+
 
 @dataclass
 class UserProfile:
+    favorite_genre: str        # genre group name (e.g. "rock"), or "" for any
+    favorite_mood: str         # one of the 7 derived moods, or "" for any
+    target_energy: float       # 0–1
+    target_valence: float = 0.5       # 0 = melancholic, 1 = uplifting
+    target_danceability: float = 0.5  # 0 = calm, 1 = very danceable
+    likes_acoustic: bool = False
+    allow_explicit: bool = True
+    favorite_artists: List[str] = field(default_factory=list)
+    discovery_preference: float = 0.5  # 0 = familiar, 1 = exploratory
+
+
+@dataclass
+class Recommendation:
+    song: Song
+    score: float
+    confidence: float   # 0–100
+    explanation: str
+    tag: str            # "safe match" | "explore pick" | "partial match"
+
+
+# ---------------------------------------------------------------------------
+# Retriever — Stage 1: candidate filtering
+# ---------------------------------------------------------------------------
+
+class Retriever:
     """
-    Represents a user's taste preferences.
-    Required by tests/test_recommender.py
+    Cuts the full catalog down to a manageable candidate pool before scoring.
+
+    With a large catalog (100k+ songs), filtering by genre group + energy window
+    reduces candidates to a few thousand, keeping recommendation latency low.
     """
-    favorite_genre: str
-    favorite_mood: str
-    target_energy: float
-    likes_acoustic: bool
+
+    _MIN_POOL = 50          # widen search if genre pool is smaller than this
+    _ENERGY_WINDOW = 0.30   # ±energy tolerance for candidate pre-filter
+    
+    def retrieve(self, user: UserProfile, songs: List[Song]) -> List[Song]:
+        
+        logger.info(f"Starting retrieval with {len(songs)} songs")
+
+        pool = [s for s in songs if user.allow_explicit or not s.explicit]
+        logger.info(f"After explicit filter: {len(pool)} songs")
+
+        if user.favorite_genre:
+            genre_pool = [s for s in pool if s.genre_group == user.favorite_genre]
+            logger.info(f"Genre filter '{user.favorite_genre}': {len(genre_pool)} songs")
+
+            if len(genre_pool) >= self._MIN_POOL:
+                energy_pool = [
+                    s for s in genre_pool
+                    if abs(s.energy - user.target_energy) <= self._ENERGY_WINDOW
+                ]
+                logger.info(f"Energy filter: {len(energy_pool)} songs")
+                pool = energy_pool if len(energy_pool) >= self._MIN_POOL else genre_pool
+            else:
+                logger.info("Genre too sparse, using fallback")
+                fallback = [
+                    s for s in pool
+                    if (not user.favorite_mood or s.mood == user.favorite_mood)
+                    and abs(s.energy - user.target_energy) <= self._ENERGY_WINDOW
+                ]
+                pool = fallback if len(fallback) >= self._MIN_POOL else pool
+
+        logger.info(f"Final candidate pool size: {len(pool)}")
+        return pool if pool else songs[: self._MIN_POOL]
+
+# ---------------------------------------------------------------------------
+# Ranker — Stage 2: feature-vector scoring
+# ---------------------------------------------------------------------------
+
+class Ranker:
+    """
+    Scores candidates using a 5-feature weighted vector plus genre, mood,
+    acoustic, and artist bonuses.
+
+    Max achievable score breakdown:
+        genre exact match  +3.0
+        mood match         +1.5
+        energy similarity  +1.0   (weight 1.0)
+        valence similarity +0.8   (weight 0.8)
+        danceability sim.  +0.8   (weight 0.8)
+        acoustic bonus     +0.5
+        artist bonus       +0.5
+        ──────────────────────
+        MAX                 8.1
+    """
+
+    _MAX_RAW_SCORE: float = 8.1
+
+    def score(self, user: UserProfile, song: Song) -> Tuple[float, List[str]]:
+        """Return (raw_score, reasons) for one song."""
+        s = 0.0
+        reasons: List[str] = []
+
+        # --- Genre (exact = +3.0, same group = +1.5) ---
+        if user.favorite_genre:
+            if song.genre.lower() == user.favorite_genre.lower():
+                s += 3.0
+                reasons.append(f"exact genre match ({song.genre})")
+            elif song.genre_group == user.favorite_genre:
+                s += 1.5
+                reasons.append(f"related genre ({song.genre} ≈ {user.favorite_genre})")
+
+        # --- Mood (+1.5) ---
+        if user.favorite_mood and song.mood == user.favorite_mood:
+            s += 1.5
+            reasons.append(f"mood match ({song.mood})")
+
+        # --- Energy similarity (0–1.0) ---
+        e_sim = round(1.0 - abs(song.energy - user.target_energy), 2)
+        s += e_sim
+        if e_sim >= 0.85:
+            reasons.append(f"energy is a strong fit ({e_sim:.0%})")
+        elif e_sim >= 0.70:
+            reasons.append(f"energy is close ({e_sim:.0%})")
+
+        # --- Valence similarity (0–0.8) ---
+        v_sim = round((1.0 - abs(song.valence - user.target_valence)) * 0.8, 2)
+        s += v_sim
+        if v_sim >= 0.68:
+            reasons.append("mood tone is a strong fit")
+        elif v_sim >= 0.56:
+            reasons.append("mood tone is close")
+
+        # --- Danceability similarity (0–0.8) ---
+        d_sim = round((1.0 - abs(song.danceability - user.target_danceability)) * 0.8, 2)
+        s += d_sim
+        if d_sim >= 0.68:
+            reasons.append("groove level matches well")
+
+        # --- Acoustic preference (±0.5) ---
+        if song.acousticness >= 0.7:
+            if user.likes_acoustic:
+                s += 0.5
+                reasons.append("acoustic sound you enjoy")
+            else:
+                s -= 0.5
+
+        # --- Favorite artist bonus (+0.5) ---
+        if user.favorite_artists and song.artist in user.favorite_artists:
+            s += 0.5
+            reasons.append(f"by {song.artist}, one of your favorites")
+
+        # --- Discovery boost (nudges non-genre songs up when user wants exploration) ---
+        if user.discovery_preference > 0.5 and user.favorite_genre:
+            if song.genre_group != user.favorite_genre:
+                boost = round((user.discovery_preference - 0.5) * 0.6, 2)
+                s += boost
+
+        return s, reasons
+
+    def rank(
+        self, user: UserProfile, candidates: List[Song]
+    ) -> List[Tuple[Song, float, List[str]]]:
+        """Score and sort candidates, highest first."""
+        scored = [(song, *self.score(user, song)) for song in candidates]
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return scored
+
+
+# ---------------------------------------------------------------------------
+# Recommender — orchestrates the full pipeline
+# ---------------------------------------------------------------------------
 
 class Recommender:
-    """
-    OOP implementation of the recommendation logic.
-    Required by tests/test_recommender.py
-    """
-    def __init__(self, songs: List[Song]):
+    """retrieve → rank → diversity → annotate"""
+
+    def __init__(self, songs: List[Song]) -> None:
         self.songs = songs
+        self._retriever = Retriever()
+        self._ranker = Ranker()
 
-    def _score_song(self, user: UserProfile, song: Song) -> float:
-        """Compute a numeric score for a Song against a UserProfile."""
-        score = 0.0
+    def recommend(self, user: UserProfile, k: int = 5) -> List[Recommendation]:
+        logger.info("Running recommendation pipeline")
 
-        if song.genre.lower() == user.favorite_genre.lower():
-            score += 2.0
-        if song.mood.lower() == user.favorite_mood.lower():
-            score += 1.0
+        candidates = self._retriever.retrieve(user, self.songs)
+        logger.info(f"Candidates retrieved: {len(candidates)}")
 
-        energy_similarity = 1.0 - abs(song.energy - user.target_energy)
-        score += energy_similarity
+        ranked = self._ranker.rank(user, candidates)
+        logger.info("Ranking completed")
 
-        if user.likes_acoustic and song.acousticness >= 0.7:
-            score += 0.5
-        elif not user.likes_acoustic and song.acousticness >= 0.7:
-            score -= 0.5
+        diverse = self._apply_diversity(ranked, max_per_genre=2, pool=k * 4)
+        logger.info(f"After diversity filter: {len(diverse)}")
 
-        return score
+        results = [
+            self._make_recommendation(user, song, score, reasons)
+            for song, score, reasons in diverse[:k]
+        ]
 
-    def recommend(self, user: UserProfile, k: int = 5) -> List[Song]:
-        """Return the top-k songs sorted from highest to lowest score."""
-        scored = [(song, self._score_song(user, song)) for song in self.songs]
-        scored.sort(key=lambda x: x[1], reverse=True)
-        return [song for song, _ in scored[:k]]
+        logger.info(f"Returning {len(results)} recommendations")
+        return results
+    def run_guardrails(self, recs: List[Recommendation]) -> List[str]:
+        warnings: List[str] = []
 
-    def explain_recommendation(self, user: UserProfile, song: Song) -> str:
-        """Return a human-readable explanation of why a song was recommended."""
-        reasons = []
+        if len(set(r.song.genre_group for r in recs)) == 1:
+            warnings.append("All recommendations from same genre")
 
-        if song.genre.lower() == user.favorite_genre.lower():
-            reasons.append(f"matches your favorite genre ({song.genre})")
-        if song.mood.lower() == user.favorite_mood.lower():
-            reasons.append(f"matches your preferred mood ({song.mood})")
+        low_conf = [r for r in recs if r.confidence < 30]
+        if low_conf:
+            warnings.append("Low confidence recommendations detected")
 
-        energy_diff = abs(song.energy - user.target_energy)
-        if energy_diff <= 0.1:
-            reasons.append("energy level is very close to your target")
-        elif energy_diff <= 0.25:
-            reasons.append("energy level is fairly close to your target")
+        if warnings:
+            logger.warning(f"Guardrails triggered: {warnings}")
+        else:
+            logger.info("Guardrails passed")
 
-        if user.likes_acoustic and song.acousticness >= 0.7:
-            reasons.append("has the acoustic sound you enjoy")
+        return warnings
 
-        if not reasons:
-            reasons.append("has some features that partially align with your preferences")
+    # ------------------------------------------------------------------
+    # Internals
+    # ------------------------------------------------------------------
 
-        return "Recommended because it " + ", ".join(reasons) + "."
+    def _apply_diversity(
+        self,
+        ranked: List[Tuple[Song, float, List[str]]],
+        max_per_genre: int,
+        pool: int,
+    ) -> List[Tuple[Song, float, List[str]]]:
+        """Cap songs per genre_group to enforce variety."""
+        genre_counts: Dict[str, int] = {}
+        result: List[Tuple[Song, float, List[str]]] = []
+        overflow: List[Tuple[Song, float, List[str]]] = []
 
+        for item in ranked:
+            g = item[0].genre_group
+            count = genre_counts.get(g, 0)
+            if count < max_per_genre:
+                genre_counts[g] = count + 1
+                result.append(item)
+            else:
+                overflow.append(item)
+            if len(result) >= pool:
+                break
 
-def load_songs(csv_path: str) -> List[Dict]:
-    """Load songs from a CSV file and return a list of dicts with typed values."""
-    songs = []
-    with open(csv_path, newline='', encoding='utf-8') as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            songs.append({
-                'id': int(row['id']),
-                'title': row['title'],
-                'artist': row['artist'],
-                'genre': row['genre'],
-                'mood': row['mood'],
-                'energy': float(row['energy']),
-                'tempo_bpm': float(row['tempo_bpm']),
-                'valence': float(row['valence']),
-                'danceability': float(row['danceability']),
-                'acousticness': float(row['acousticness']),
-            })
-    print(f"Loaded songs: {len(songs)}")
-    return songs
+        result.extend(overflow)
+        return result
 
+    def _make_recommendation(
+        self,
+        user: UserProfile,
+        song: Song,
+        score: float,
+        reasons: List[str],
+    ) -> Recommendation:
+        confidence = round(min(score / Ranker._MAX_RAW_SCORE, 1.0) * 100, 1)
+        tag = self._assign_tag(user, song, confidence)
+        explanation = (
+            "Recommended because: " + ", ".join(reasons) + "."
+            if reasons
+            else "Has some features that partially align with your preferences."
+        )
+        return Recommendation(
+            song=song,
+            score=round(score, 2),
+            confidence=confidence,
+            explanation=explanation,
+            tag=tag,
+        )
 
-def score_song(user_prefs: Dict, song: Dict) -> Tuple[float, List[str]]:
-    """Score a single song dict against user_prefs; return (score, reasons)."""
-    score = 0.0
-    reasons = []
+    def _assign_tag(self, user: UserProfile, song: Song, confidence: float) -> str:
+        genre_match = bool(user.favorite_genre) and (
+            song.genre.lower() == user.favorite_genre.lower()
+            or song.genre_group == user.favorite_genre
+        )
+        mood_match = bool(user.favorite_mood) and song.mood == user.favorite_mood
 
-    # Genre match: +2.0 points
-    if song['genre'].lower() == user_prefs.get('genre', '').lower():
-        score += 2.0
-        reasons.append(f"genre match (+2.0)")
-
-    # Mood match: +1.0 point
-    if song['mood'].lower() == user_prefs.get('mood', '').lower():
-        score += 1.0
-        reasons.append(f"mood match (+1.0)")
-
-    # Energy similarity: up to +1.0 point (closer = higher score)
-    target_energy = float(user_prefs.get('energy', 0.5))
-    energy_sim = round(1.0 - abs(song['energy'] - target_energy), 2)
-    score += energy_sim
-    reasons.append(f"energy similarity (+{energy_sim})")
-
-    return score, reasons
-
-
-def recommend_songs(user_prefs: Dict, songs: List[Dict], k: int = 5) -> List[Tuple[Dict, float, str]]:
-    """Rank all songs by score and return the top-k as (song, score, explanation) tuples."""
-    scored = []
-    for song in songs:
-        score, reasons = score_song(user_prefs, song)
-        explanation = "Because: " + ", ".join(reasons)
-        scored.append((song, score, explanation))
-
-    # sorted() returns a new list; .sort() modifies in place — using sorted() here
-    # so the original list is not mutated
-    ranked = sorted(scored, key=lambda x: x[1], reverse=True)
-    return ranked[:k]
+        if genre_match and mood_match:
+            return "safe match"
+        if not genre_match and user.discovery_preference > 0.5:
+            return "explore pick"
+        if confidence >= 60:
+            return "safe match"
+        return "partial match"
